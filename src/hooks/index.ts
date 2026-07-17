@@ -1,0 +1,1 @@
+export { useDashboardRedirect } from './useDashboardRedirect';

@@ -1,0 +1,296 @@
+// FarmerPay — Prisma schema
+// Phase 1: Identity (User, Profile, UserRole)
+// Phase 2: Agricultural domain (Farm, Product, Harvest, Batch, etc.)
+// Future: Ownership history, payments, wallets, QR verification, splits
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Identity ──────────────────────────────────────────────────────────
+
+enum UserRole {
+  FARMER
+  WHOLESALER
+  RETAILER
+  ADMIN
+  CONSUMER
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      UserRole @default(FARMER)
+  phone     String?
+  profile   Profile?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  farms         Farm[]
+  harvests      Harvest[]
+  batches       Batch[]           @relation("BatchHolder")
+  ownershipLogs OwnershipHistory[]
+  paymentsSent  Payment[]         @relation("PaymentFrom")
+  paymentsRecv  Payment[]         @relation("PaymentTo")
+  wallet        Wallet?
+
+  @@index([role])
+}
+
+model Profile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio       String?
+  avatarUrl String?
+  address   String?
+  region    String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Locations (reusable address) ──────────────────────────────────────
+
+model Location {
+  id         String   @id @default(uuid())
+  address    String
+  district   String?
+  state      String?
+  country    String   @default("India")
+  postalCode String?  @map("postal_code")
+  latitude   Float?
+  longitude  Float?
+  metadata   Json?
+  farms      Farm[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// ─── Product Categories ───────────────────────────────────────────────
+
+model ProductCategory {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  products    Product[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// ─── Farms ─────────────────────────────────────────────────────────────
+
+model Farm {
+  id                 String    @id @default(uuid())
+  name               String
+  ownerId            String?   @map("owner_id")
+  owner              User?     @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  locationId         String?   @map("location_id")
+  location           Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  address            String?
+  district           String?
+  state              String?
+  country            String    @default("India")
+  latitude           Float?
+  longitude          Float?
+  farmSize           Float?    @map("farm_size")
+  farmSizeUnit       String    @default("acres") @map("farm_size_unit")
+  isOrganic          Boolean   @default(false) @map("is_organic")
+  verificationStatus String    @default("PENDING") @map("verification_status")
+  description        String?
+  harvests           Harvest[]
+  batches           Batch[]
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([ownerId])
+  @@index([locationId])
+}
+
+// ─── Products ──────────────────────────────────────────────────────────
+
+model Product {
+  id             String           @id @default(uuid())
+  name           String
+  scientificName String?          @map("scientific_name")
+  description    String?
+  categoryId     String?          @map("category_id")
+  category       ProductCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  shelfLife      String?          @map("shelf_life")
+  imageUrl       String?          @map("image_url")
+  batches        Batch[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([categoryId])
+}
+
+// ─── Harvests ───────────────────────────────────────────────────────────
+
+model Harvest {
+  id           String         @id @default(uuid())
+  farmId       String         @map("farm_id")
+  farm         Farm           @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  harvestDate  DateTime       @map("harvest_date")
+  weatherNotes String?        @map("weather_notes")
+  season       String?
+  notes        String?
+  createdBy    String?        @map("created_by")
+  creator      User?          @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  batches      Batch[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([farmId])
+  @@index([harvestDate])
+}
+
+// ─── Batches (core traceability unit) ──────────────────────────────────
+
+model Batch {
+  id             String           @id @default(uuid())
+  batchId        String           @unique @map("batch_id")
+  harvestId      String           @map("harvest_id")
+  harvest        Harvest          @relation(fields: [harvestId], references: [id], onDelete: Cascade)
+  productId      String           @map("product_id")
+  product        Product          @relation(fields: [productId], references: [id], onDelete: Restrict)
+  farmId         String           @map("farm_id")
+  farm           Farm             @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  quantity       Float
+  unit           String           @default("kg")
+  status         String           @default("CREATED")
+  currentHolderId String?        @map("current_holder_id")
+  currentHolder  User?            @relation("BatchHolder", fields: [currentHolderId], references: [id], onDelete: SetNull)
+  metadata       Json?
+  images         BatchImage[]
+  certifications Certification[]
+  ownershipLog   OwnershipHistory[]
+  splits         BatchSplit[]     @relation("SplitParent")
+  childSplits    BatchSplit[]     @relation("SplitChild")
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([batchId])
+  @@index([harvestId])
+  @@index([farmId])
+  @@index([productId])
+  @@index([status])
+}
+
+// ─── Batch Images ───────────────────────────────────────────────────────
+
+model BatchImage {
+  id         String   @id @default(uuid())
+  batchId    String   @map("batch_id")
+  batch      Batch    @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  url        String
+  caption    String?
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+
+  @@index([batchId])
+}
+
+// ─── Certifications ─────────────────────────────────────────────────────
+
+model Certification {
+  id          String    @id @default(uuid())
+  batchId     String    @map("batch_id")
+  batch       Batch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  name        String
+  issuedBy    String    @map("issued_by")
+  issueDate   DateTime  @map("issue_date")
+  expiryDate  DateTime? @map("expiry_date")
+  documentUrl String?   @map("document_url")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([batchId])
+}
+
+// ─── Ownership History (future phase) ──────────────────────────────────
+
+model OwnershipHistory {
+  id          String   @id @default(uuid())
+  batchId     String
+  batch       Batch    @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  fromUserId   String
+  toUserId     String
+  toUser      User     @relation(fields: [toUserId], references: [id])
+  signature    String
+  txHash      String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([batchId])
+}
+
+model BatchSplit {
+  id             String      @id @default(uuid())
+  parentBatchId  String
+  parentBatch    Batch       @relation("SplitParent", fields: [parentBatchId], references: [id], onDelete: Cascade)
+  childBatchId   String
+  childBatch     Batch       @relation("SplitChild", fields: [childBatchId], references: [id], onDelete: Cascade)
+  quantity       Float
+  createdAt      DateTime    @default(now())
+
+  @@index([parentBatchId])
+}
+
+// ─── Payments & Wallets (future phase) ─────────────────────────────────
+
+enum PaymentStatus {
+  PENDING
+  SETTLED
+  FAILED
+  REFUNDED
+}
+
+model Wallet {
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey String    @unique
+  balance   Decimal   @default(0)
+  currency  String    @default("USDC")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payment {
+  id         String        @id @default(uuid())
+  batchId    String?
+  fromUserId String
+  fromUser   User          @relation("PaymentFrom", fields: [fromUserId], references: [id])
+  toUserId   String
+  toUser     User          @relation("PaymentTo", fields: [toUserId], references: [id])
+  amount     Decimal
+  currency   String        @default("USDC")
+  status     PaymentStatus @default(PENDING)
+  txHash     String?
+  metadata   Json?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([fromUserId])
+  @@index([toUserId])
+  @@index([status])
+}
+
+// ─── Verification (future phase) ────────────────────────────────────────
+
+model QRVerification {
+  id          String   @id @default(uuid())
+  batchId     String
+  scannedByIp String?
+  scannedAt   DateTime @default(now())
+  metadata    Json?
+
+  @@index([batchId])
+}
